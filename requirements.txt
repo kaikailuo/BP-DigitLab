@@ -4,3 +4,8 @@ PyYAML
 numpy
 matplotlib
 scikit-learn
+
+streamlit
+Pillow
+pandas
+streamlit-drawable-canvas

@@ -1,4 +1,5 @@
 import os
+from typing import Callable
 
 import torch
 from torch import nn
@@ -66,10 +67,12 @@ def build_criterion(config):
 
 
 class BPTrainer:
-    def __init__(self, config, train_set, val_set):
+    def __init__(self, config, train_set, val_set, log_callback: Callable[[str], None] | None = None, epoch_callback: Callable[[dict], None] | None = None):
         self.config = config
         self.train_set = train_set
         self.val_set = val_set
+        self.log_callback = log_callback
+        self.epoch_callback = epoch_callback
 
         self.device = resolve_device(config.device)
         self.model = MLP(
@@ -187,6 +190,12 @@ class BPTrainer:
         best_epoch = 0
         patience_counter = 0
 
+        if self.log_callback is not None:
+            self.log_callback(f"开始训练实验：{self.config.experiment_name}")
+            self.log_callback(f"设备：{self.device}")
+            self.log_callback(f"输入维度：{self.config.input_dim}")
+            self.log_callback(f"隐藏层结构：{self.config.hidden_dims}")
+
         print(f"开始训练实验：{self.config.experiment_name}")
         print(f"设备：{self.device}")
         print(f"输入维度：{self.config.input_dim}")
@@ -206,11 +215,30 @@ class BPTrainer:
             self.history["val_acc"].append(round(val_acc, 6))
             self.history["lr"].append(round(current_lr, 8))
 
+            if self.epoch_callback is not None:
+                self.epoch_callback(
+                    {
+                        "epoch": epoch,
+                        "total_epochs": self.config.epochs,
+                        "train_loss": train_loss,
+                        "train_acc": train_acc,
+                        "val_loss": val_loss,
+                        "val_acc": val_acc,
+                        "lr": current_lr,
+                    }
+                )
+
             print(
                 f"Epoch [{epoch:02d}/{self.config.epochs}] "
                 f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
                 f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} lr={current_lr:.6f}"
             )
+
+            if self.log_callback is not None:
+                self.log_callback(
+                    f"Epoch [{epoch:02d}/{self.config.epochs}] train_loss={train_loss:.4f} "
+                    f"train_acc={train_acc:.4f} val_loss={val_loss:.4f} val_acc={val_acc:.4f} lr={current_lr:.6f}"
+                )
 
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
@@ -218,6 +246,8 @@ class BPTrainer:
                 patience_counter = 0
                 self._save_checkpoint(epoch, best_val_acc)
                 print(f"验证集准确率提升，已保存最佳模型到：{self.config.checkpoint_path}")
+                if self.log_callback is not None:
+                    self.log_callback(f"验证集准确率提升，已保存最佳模型到：{self.config.checkpoint_path}")
             else:
                 patience_counter += 1
 
@@ -225,7 +255,11 @@ class BPTrainer:
                 print(
                     f"连续 {self.config.patience} 个 epoch 验证集准确率未提升，触发 Early Stopping。"
                 )
+                if self.log_callback is not None:
+                    self.log_callback(f"连续 {self.config.patience} 个 epoch 验证集准确率未提升，触发 Early Stopping。")
                 break
 
         self._save_history(best_epoch=best_epoch, best_val_acc=best_val_acc)
         print(f"训练结束，最佳验证集准确率：{best_val_acc:.4f}，最佳轮次：{best_epoch}")
+        if self.log_callback is not None:
+            self.log_callback(f"训练结束，最佳验证集准确率：{best_val_acc:.4f}，最佳轮次：{best_epoch}")
