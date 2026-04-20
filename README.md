@@ -127,7 +127,7 @@ python main.py --mode test --config hparams/bp_mnist_tuned_v2.yaml
 - `accuracy_curve.png`
 - `train_curve.png`
 - `metrics.json`
-- `test_metrics.json`
+- `metrics.json`
 - `classification_report.txt`
 - `confusion_matrix.png`
 - `wrong_samples.png`

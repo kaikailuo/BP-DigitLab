@@ -142,7 +142,7 @@ def _build_result_flags(experiment_result_dir: Path) -> Dict[str, Any]:
     history_path = experiment_result_dir / "training_history.json"
     loss_curve_path = experiment_result_dir / "loss_curve.png"
     accuracy_curve_path = experiment_result_dir / "accuracy_curve.png"
-    metrics_path = experiment_result_dir / "test_metrics.json"
+    metrics_path = experiment_result_dir / "metrics.json"
     confusion_matrix_path = experiment_result_dir / "confusion_matrix.png"
     report_path = experiment_result_dir / "classification_report.txt"
 
@@ -157,13 +157,13 @@ def _build_result_flags(experiment_result_dir: Path) -> Dict[str, Any]:
         "has_training_history": history_path.exists(),
         "has_loss_curve": loss_curve_path.exists(),
         "has_accuracy_curve": accuracy_curve_path.exists(),
-        "has_test_metrics": metrics_path.exists(),
+        "has_metrics": metrics_path.exists(),
         "has_confusion_matrix": confusion_matrix_path.exists(),
         "has_classification_report": report_path.exists(),
         "history_path": str(history_path.resolve()),
         "loss_curve_path": str(loss_curve_path.resolve()),
         "accuracy_curve_path": str(accuracy_curve_path.resolve()),
-        "test_metrics_path": str(metrics_path.resolve()),
+        "metrics_path": str(metrics_path.resolve()),
         "confusion_matrix_path": str(confusion_matrix_path.resolve()),
         "classification_report_path": str(report_path.resolve()),
     }
@@ -238,13 +238,13 @@ def load_experiment_artifacts(experiment_row: Dict[str, Any]) -> Dict[str, Any]:
     if not result_dir.exists() or not result_dir.is_dir():
         return {
             "training_history": {},
-            "test_metrics": {},
+            "metrics": {},
             "classification_report": "",
             "images": {},
         }
 
     history_path = result_dir / "training_history.json"
-    metrics_path = result_dir / "test_metrics.json"
+    metrics_path = result_dir / "metrics.json"
     report_path = result_dir / "classification_report.txt"
 
     images = {}
@@ -255,7 +255,7 @@ def load_experiment_artifacts(experiment_row: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "training_history": _safe_read_json(history_path),
-        "test_metrics": _safe_read_json(metrics_path),
+        "metrics": _safe_read_json(metrics_path),
         "classification_report": _safe_read_text(report_path),
         "images": images,
     }

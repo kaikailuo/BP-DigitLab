@@ -390,7 +390,7 @@ def _history_dataframe(rows: List[Dict[str, Any]]) -> pd.DataFrame:
                 "training_history": row["has_training_history"],
                 "loss_curve": row["has_loss_curve"],
                 "accuracy_curve": row["has_accuracy_curve"],
-                "test_metrics": row["has_test_metrics"],
+                "metrics": row["has_metrics"],
             }
         )
     return pd.DataFrame(data)
@@ -461,9 +461,9 @@ def render_experiment_history(form_data: Dict[str, Any]):
     else:
         st.info("未找到可视化图片文件（loss/accuracy/confusion 等）。")
 
-    metrics = artifacts.get("test_metrics", {})
+    metrics = artifacts.get("metrics", {})
     if metrics:
-        st.markdown("#### test_metrics.json")
+        st.markdown("#### metrics.json")
         st.json(metrics)
 
     report_text = artifacts.get("classification_report", "")
