@@ -1,97 +1,17 @@
-﻿import json
-import ast
-from dataclasses import fields
+"""
+实验管理服务。
+
+负责扫描实验、加载产物、管理 checkpoint 和 results。
+"""
+import json
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List
 
 import torch
 
-from src.hparams import BPTrainingHparams
-
-
-def _normalize_hparams_payload(data: Dict[str, Any]) -> Dict[str, Any]:
-    payload = dict(data or {})
-
-    if "learning_rate" in payload and "lr" not in payload:
-        payload["lr"] = payload["learning_rate"]
-
-    allowed_fields = {item.name for item in fields(BPTrainingHparams)}
-    normalized = {key: value for key, value in payload.items() if key in allowed_fields}
-
-    if "hidden_dims" in normalized and normalized["hidden_dims"] is not None:
-        normalized["hidden_dims"] = normalized["hidden_dims"]
-
-    return normalized
-
-
-def parse_hidden_dims(hidden_dims_text: Any) -> List[int]:
-    if isinstance(hidden_dims_text, (list, tuple)):
-        dims_source = hidden_dims_text
-    else:
-        text = str(hidden_dims_text).strip()
-        if text.startswith("[") and text.endswith("]"):
-            try:
-                parsed = ast.literal_eval(text)
-            except (ValueError, SyntaxError):
-                parsed = text
-            dims_source = parsed if isinstance(parsed, (list, tuple)) else text
-        else:
-            dims_source = text
-
-    if isinstance(dims_source, (list, tuple)):
-        dims = [str(item).strip() for item in dims_source if str(item).strip()]
-    else:
-        dims = [item.strip() for item in str(dims_source).split(",") if item.strip()]
-
-    if not dims:
-        raise ValueError("hidden_dims cannot be empty.")
-    parsed = [int(item) for item in dims]
-    if any(dim <= 0 for dim in parsed):
-        raise ValueError("All hidden dims must be positive integers.")
-    return parsed
-
-
-def build_hparams_from_form(form_data: Dict[str, Any]) -> BPTrainingHparams:
-    hidden_dims = parse_hidden_dims(str(form_data["hidden_dims"]))
-
-    data: Dict[str, Any] = {
-        "experiment_name": str(form_data["experiment_name"]).strip(),
-        "epochs": int(form_data["epochs"]),
-        "batch_size": int(form_data["batch_size"]),
-        "lr": float(form_data["learning_rate"]),
-        "hidden_dim": hidden_dims[0],
-        "hidden_dims": str(form_data["hidden_dims"]).strip(),
-        "dropout": float(form_data["dropout"]),
-        "optimizer": str(form_data["optimizer"]),
-        "seed": int(form_data["seed"]),
-        "feature_type": str(form_data["feature_type"]),
-        "train_size": int(form_data["train_size"]),
-        "val_size": int(form_data["val_size"]),
-        "test_size": int(form_data["test_size"]),
-        "momentum": float(form_data["momentum"]),
-        "weight_decay": float(form_data["weight_decay"]),
-        "scheduler": str(form_data["scheduler"]),
-        "step_size": int(form_data["step_size"]),
-        "gamma": float(form_data["gamma"]),
-        "early_stopping": bool(form_data["early_stopping"]),
-        "patience": int(form_data["patience"]),
-        "device": str(form_data["device"]),
-        "data_root": str(form_data["data_root"]),
-        "save_dir": str(form_data["save_dir"]),
-        "result_dir": str(form_data["result_dir"]),
-        "num_workers": int(form_data["num_workers"]),
-        "num_classes": 10,
-    }
-
-    checkpoint_path = str(form_data.get("checkpoint_path", "")).strip()
-    if checkpoint_path:
-        data["checkpoint_path_override"] = str(Path(checkpoint_path).resolve())
-
-    normalized = _normalize_hparams_payload(data)
-    return BPTrainingHparams(**normalized)
-
 
 def _safe_read_json(path: Path) -> Dict[str, Any]:
+    """安全地读取 JSON 文件。"""
     if not path.exists() or not path.is_file():
         return {}
     try:
@@ -103,6 +23,7 @@ def _safe_read_json(path: Path) -> Dict[str, Any]:
 
 
 def _safe_read_text(path: Path) -> str:
+    """安全地读取文本文件。"""
     if not path.exists() or not path.is_file():
         return ""
     try:
@@ -112,6 +33,7 @@ def _safe_read_text(path: Path) -> str:
 
 
 def _safe_checkpoint_meta(path: Path) -> Dict[str, Any]:
+    """安全地加载 checkpoint 元数据。"""
     try:
         checkpoint = torch.load(str(path), map_location="cpu")
     except Exception:
@@ -132,6 +54,7 @@ def _safe_checkpoint_meta(path: Path) -> Dict[str, Any]:
 
 
 def _resolve_experiment_name(checkpoint_path: Path, config: Dict[str, Any]) -> str:
+    """从 checkpoint 路径或配置中解析实验名称。"""
     name_from_config = str(config.get("experiment_name", "")).strip()
     if name_from_config:
         return name_from_config
@@ -139,6 +62,11 @@ def _resolve_experiment_name(checkpoint_path: Path, config: Dict[str, Any]) -> s
 
 
 def _build_result_flags(experiment_result_dir: Path) -> Dict[str, Any]:
+    """
+    构建实验结果标志和文件信息。
+    
+    返回包含各种产物文件的存在标志和路径的字典。
+    """
     history_path = experiment_result_dir / "training_history.json"
     loss_curve_path = experiment_result_dir / "loss_curve.png"
     accuracy_curve_path = experiment_result_dir / "accuracy_curve.png"
@@ -170,12 +98,23 @@ def _build_result_flags(experiment_result_dir: Path) -> Dict[str, Any]:
 
 
 def scan_experiments(checkpoint_root: str = "checkpoints", result_root: str = "results") -> List[Dict[str, Any]]:
+    """
+    扫描所有实验（checkpoint 和 results）。
+    
+    参数：
+        checkpoint_root: checkpoint 目录路径
+        result_root: results 目录路径
+    
+    返回：
+        实验列表，按更新时间逆序排列
+    """
     checkpoint_dir = Path(checkpoint_root)
     result_dir = Path(result_root)
 
     rows: List[Dict[str, Any]] = []
     covered_experiments = set()
 
+    # 先从 checkpoint 扫描
     checkpoint_files = sorted(checkpoint_dir.glob("*.pth")) if checkpoint_dir.exists() else []
 
     for checkpoint_path in checkpoint_files:
@@ -204,6 +143,7 @@ def scan_experiments(checkpoint_root: str = "checkpoints", result_root: str = "r
         row.update(flags)
         rows.append(row)
 
+    # 再从 results 扫描未被 checkpoint 覆盖的
     result_dirs = sorted(result_dir.glob("*")) if result_dir.exists() else []
     for experiment_result_dir in result_dirs:
         if not experiment_result_dir.is_dir():
@@ -234,6 +174,15 @@ def scan_experiments(checkpoint_root: str = "checkpoints", result_root: str = "r
 
 
 def load_experiment_artifacts(experiment_row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    加载单个实验的全部产物（图片、报告、指标等）。
+    
+    参数：
+        experiment_row: 从 scan_experiments 获得的单行记录
+    
+    返回：
+        包含产物数据的字典
+    """
     result_dir = Path(str(experiment_row.get("result_dir", "")))
     if not result_dir.exists() or not result_dir.is_dir():
         return {
@@ -262,6 +211,15 @@ def load_experiment_artifacts(experiment_row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def list_available_checkpoints(checkpoint_root: str = "checkpoints") -> List[str]:
+    """
+    列出所有可用的 checkpoint 文件路径。
+    
+    参数：
+        checkpoint_root: checkpoint 目录路径
+    
+    返回：
+        checkpoint 路径列表
+    """
     checkpoint_dir = Path(checkpoint_root)
     if not checkpoint_dir.exists() or not checkpoint_dir.is_dir():
         return []

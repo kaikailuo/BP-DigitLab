@@ -1,6 +1,9 @@
-﻿import os
-from dataclasses import fields
-from pathlib import Path
+"""
+识别服务。
+
+负责图像预处理和模型预测的全流程。
+这是从原 inference.py 中提取的与识别相关的所有逻辑。
+"""
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -13,18 +16,9 @@ from src.models import MLP
 from src.utils import resolve_device
 
 
-def _normalize_hparams_payload(data: Dict[str, Any]) -> Dict[str, Any]:
-    payload = dict(data or {})
-
-    if "learning_rate" in payload and "lr" not in payload:
-        payload["lr"] = payload["learning_rate"]
-
-    allowed = {item.name for item in fields(BPTrainingHparams)}
-    return {key: value for key, value in payload.items() if key in allowed}
-
-
+# ============== 画板图像处理 ==============
 def _extract_canvas_gray(canvas_image: np.ndarray) -> np.ndarray:
-    """Convert canvas input to grayscale float image in range [0, 255]."""
+    """将 Streamlit 画板转换为灰度浮点图像 [0, 255]。"""
     if canvas_image is None:
         raise ValueError("Canvas image is empty.")
 
@@ -52,183 +46,9 @@ def _extract_canvas_gray(canvas_image: np.ndarray) -> np.ndarray:
     return np.clip(gray, 0.0, 255.0).astype(np.float32)
 
 
-def _border_pixels(gray_0_255: np.ndarray) -> np.ndarray:
-    h, w = gray_0_255.shape
-    if h < 3 or w < 3:
-        return gray_0_255.reshape(-1)
-
-    return np.concatenate(
-        [
-            gray_0_255[0, :],
-            gray_0_255[-1, :],
-            gray_0_255[:, 0],
-            gray_0_255[:, -1],
-        ],
-        axis=0,
-    )
-
-
-def _to_foreground_high(gray_0_255: np.ndarray) -> np.ndarray:
-    """Ensure digit strokes are high-intensity and background is low-intensity."""
-    border = _border_pixels(gray_0_255)
-    bg_level = float(np.median(border))
-
-    high_score = float(np.percentile(gray_0_255, 99.0)) - bg_level
-    low_score = bg_level - float(np.percentile(gray_0_255, 1.0))
-
-    if low_score > high_score:
-        fg = 255.0 - gray_0_255
-    else:
-        fg = gray_0_255
-
-    return np.clip(fg / 255.0, 0.0, 1.0).astype(np.float32)
-
-
-def _binarize_foreground(fg_0_1: np.ndarray) -> np.ndarray:
-    non_zero = fg_0_1[fg_0_1 > 0.0]
-    if non_zero.size == 0:
-        return np.zeros_like(fg_0_1, dtype=bool)
-
-    p50 = float(np.percentile(non_zero, 50.0))
-    max_v = float(non_zero.max())
-    threshold = max(0.12, min(0.35, max(0.18 * max_v, p50)))
-    return fg_0_1 >= threshold
-
-
-def _crop_foreground_bbox(
-    fg_0_1: np.ndarray,
-    mask: np.ndarray,
-    pad: int = 1,
-) -> np.ndarray:
-    ys, xs = np.where(mask)
-    if ys.size == 0 or xs.size == 0:
-        return np.zeros((0, 0), dtype=np.float32)
-
-    y0 = max(0, int(ys.min()) - pad)
-    y1 = min(fg_0_1.shape[0], int(ys.max()) + 1 + pad)
-    x0 = max(0, int(xs.min()) - pad)
-    x1 = min(fg_0_1.shape[1], int(xs.max()) + 1 + pad)
-    return fg_0_1[y0:y1, x0:x1].astype(np.float32)
-
-
-def _resize_and_pad_to_28x28(crop_0_1: np.ndarray, target_long_side: int = 20) -> np.ndarray:
-    canvas = np.zeros((28, 28), dtype=np.float32)
-    if crop_0_1.size == 0:
-        return canvas
-
-    h, w = crop_0_1.shape
-    if h <= 0 or w <= 0:
-        return canvas
-
-    scale = float(target_long_side) / float(max(h, w))
-    new_h = max(1, int(round(h * scale)))
-    new_w = max(1, int(round(w * scale)))
-
-    resized_pil = Image.fromarray(np.clip(crop_0_1 * 255.0, 0.0, 255.0).astype(np.uint8), mode="L")
-    resized_pil = resized_pil.resize((new_w, new_h), Image.Resampling.BILINEAR)
-    resized = np.asarray(resized_pil, dtype=np.float32) / 255.0
-
-    top = (28 - new_h) // 2
-    left = (28 - new_w) // 2
-    canvas[top : top + new_h, left : left + new_w] = resized
-    return canvas
-
-
-def _resize_and_pad_to_28x28_with_mask(
-    crop_0_1: np.ndarray,
-    mask: np.ndarray,
-    target_long_side: int = 20,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Resize crop and mask together, then pad them to 28x28."""
-    canvas = np.zeros((28, 28), dtype=np.float32)
-    canvas_mask = np.zeros((28, 28), dtype=bool)
-    if crop_0_1.size == 0 or mask.size == 0:
-        return canvas, canvas_mask
-
-    h, w = crop_0_1.shape
-    if h <= 0 or w <= 0:
-        return canvas, canvas_mask
-
-    scale = float(target_long_side) / float(max(h, w))
-    new_h = max(1, int(round(h * scale)))
-    new_w = max(1, int(round(w * scale)))
-
-    resized_crop = Image.fromarray(np.clip(crop_0_1 * 255.0, 0.0, 255.0).astype(np.uint8), mode="L")
-    resized_crop = resized_crop.resize((new_w, new_h), Image.Resampling.BILINEAR)
-    resized_crop_arr = np.asarray(resized_crop, dtype=np.float32) / 255.0
-
-    resized_mask = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
-    resized_mask = resized_mask.resize((new_w, new_h), Image.Resampling.NEAREST)
-    resized_mask_arr = np.asarray(resized_mask, dtype=np.uint8) > 0
-
-    top = (28 - new_h) // 2
-    left = (28 - new_w) // 2
-    canvas[top : top + new_h, left : left + new_w] = resized_crop_arr
-    canvas_mask[top : top + new_h, left : left + new_w] = resized_mask_arr
-    return canvas, canvas_mask
-
-
-def _shift_with_zero_pad(img_0_1: np.ndarray, shift_y: int, shift_x: int) -> np.ndarray:
-    out = np.zeros_like(img_0_1, dtype=np.float32)
-    h, w = img_0_1.shape
-
-    src_y0 = max(0, -shift_y)
-    src_y1 = min(h, h - shift_y) if shift_y >= 0 else h
-    dst_y0 = max(0, shift_y)
-    dst_y1 = dst_y0 + (src_y1 - src_y0)
-
-    src_x0 = max(0, -shift_x)
-    src_x1 = min(w, w - shift_x) if shift_x >= 0 else w
-    dst_x0 = max(0, shift_x)
-    dst_x1 = dst_x0 + (src_x1 - src_x0)
-
-    if src_y1 > src_y0 and src_x1 > src_x0:
-        out[dst_y0:dst_y1, dst_x0:dst_x1] = img_0_1[src_y0:src_y1, src_x0:src_x1]
-
-    return out
-
-
-def _center_by_mass(img_0_1: np.ndarray) -> np.ndarray:
-    mass = float(img_0_1.sum())
-    if mass <= 1e-8:
-        return img_0_1.astype(np.float32)
-
-    ys, xs = np.indices(img_0_1.shape, dtype=np.float32)
-    cy = float((ys * img_0_1).sum() / mass)
-    cx = float((xs * img_0_1).sum() / mass)
-
-    target_center = 13.5
-    shift_y = int(round(target_center - cy))
-    shift_x = int(round(target_center - cx))
-    return _shift_with_zero_pad(img_0_1.astype(np.float32), shift_y=shift_y, shift_x=shift_x)
-
-
-def _center_foreground(img_0_1: np.ndarray) -> np.ndarray:
-    """Compatibility wrapper for foreground centering."""
-    return _center_by_mass(img_0_1)
-
-
-def _center_foreground_with_mask(img_0_1: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Center the foreground image and mask together by mass."""
-    mass = float(img_0_1.sum())
-    if mass <= 1e-8:
-        return img_0_1.astype(np.float32), mask.astype(bool)
-
-    ys, xs = np.indices(img_0_1.shape, dtype=np.float32)
-    cy = float((ys * img_0_1).sum() / mass)
-    cx = float((xs * img_0_1).sum() / mass)
-
-    target_center = 13.5
-    shift_y = int(round(target_center - cy))
-    shift_x = int(round(target_center - cx))
-
-    centered_img = _shift_with_zero_pad(img_0_1.astype(np.float32), shift_y=shift_y, shift_x=shift_x)
-    centered_mask = _shift_with_zero_pad(mask.astype(np.float32), shift_y=shift_y, shift_x=shift_x) > 0.5
-    return centered_img, centered_mask
-
-
+# ============== 上传图像处理 ==============
 def _extract_uploaded_gray(image: Image.Image) -> np.ndarray:
-    """Convert an uploaded PIL image to a grayscale float array in [0, 255]."""
+    """将上传的 PIL 图像转换为灰度浮点数组 [0, 255]。"""
     if image is None:
         raise ValueError("Input image is empty.")
     if not isinstance(image, Image.Image):
@@ -247,8 +67,54 @@ def _extract_uploaded_gray(image: Image.Image) -> np.ndarray:
     return np.asarray(image, dtype=np.float32)
 
 
+# ============== 前景提取 ==============
+def _border_pixels(gray_0_255: np.ndarray) -> np.ndarray:
+    """提取图像边界像素。"""
+    h, w = gray_0_255.shape
+    if h < 3 or w < 3:
+        return gray_0_255.reshape(-1)
+
+    return np.concatenate(
+        [
+            gray_0_255[0, :],
+            gray_0_255[-1, :],
+            gray_0_255[:, 0],
+            gray_0_255[:, -1],
+        ],
+        axis=0,
+    )
+
+
+def _to_foreground_high(gray_0_255: np.ndarray) -> np.ndarray:
+    """确保数字笔画是高强度，背景是低强度。"""
+    border = _border_pixels(gray_0_255)
+    bg_level = float(np.median(border))
+
+    high_score = float(np.percentile(gray_0_255, 99.0)) - bg_level
+    low_score = bg_level - float(np.percentile(gray_0_255, 1.0))
+
+    if low_score > high_score:
+        fg = 255.0 - gray_0_255
+    else:
+        fg = gray_0_255
+
+    return np.clip(fg / 255.0, 0.0, 1.0).astype(np.float32)
+
+
+def _binarize_foreground(fg_0_1: np.ndarray) -> np.ndarray:
+    """二值化前景。"""
+    non_zero = fg_0_1[fg_0_1 > 0.0]
+    if non_zero.size == 0:
+        return np.zeros_like(fg_0_1, dtype=bool)
+
+    p50 = float(np.percentile(non_zero, 50.0))
+    max_v = float(non_zero.max())
+    threshold = max(0.12, min(0.35, max(0.18 * max_v, p50)))
+    return fg_0_1 >= threshold
+
+
 def _remove_background_shading(gray_0_255: np.ndarray, blur_radius: float = 15.0) -> np.ndarray:
-    """Estimate and remove large-scale background shading from uploaded images."""
+    """从上传的图像中估计并去除大规模背景阴影。"""
     clipped = np.clip(gray_0_255, 0.0, 255.0).astype(np.uint8)
     pil_gray = Image.fromarray(clipped, mode="L")
     blurred = pil_gray.filter(ImageFilter.GaussianBlur(radius=blur_radius))
@@ -265,8 +131,9 @@ def _remove_background_shading(gray_0_255: np.ndarray, blur_radius: float = 15.0
     return np.clip(corrected, 0.0, 255.0).astype(np.float32)
 
 
+# ============== 阈值与连通域 ==============
 def _otsu_threshold_01(image_0_1: np.ndarray) -> float:
-    """Compute Otsu threshold for image values in [0, 1]."""
+    """计算 Otsu 阈值（图像值在 [0, 1] 范围内）。"""
     values = np.clip(image_0_1.astype(np.float32).reshape(-1), 0.0, 1.0)
     if values.size == 0:
         return 0.5
@@ -292,18 +159,14 @@ def _otsu_threshold_01(image_0_1: np.ndarray) -> float:
 
 
 def _connected_components(mask: np.ndarray):
+    """找到二值图像中的连通域。"""
     h, w = mask.shape
     visited = np.zeros((h, w), dtype=bool)
     components = []
     neighbors = [
-        (-1, -1),
-        (-1, 0),
-        (-1, 1),
-        (0, -1),
-        (0, 1),
-        (1, -1),
-        (1, 0),
-        (1, 1),
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1), (0, 1),
+        (1, -1), (1, 0), (1, 1),
     ]
 
     for y in range(h):
@@ -330,7 +193,7 @@ def _connected_components(mask: np.ndarray):
 
 
 def _select_main_component(mask: np.ndarray, weight_map: np.ndarray) -> Tuple[np.ndarray, float]:
-    """Select the component that best matches a single centered digit."""
+    """选择最符合单个居中数字的连通域。"""
     h, w = mask.shape
     total_pixels = float(h * w)
     min_area = max(20, int(total_pixels * 0.0008))
@@ -389,14 +252,15 @@ def _select_main_component(mask: np.ndarray, weight_map: np.ndarray) -> Tuple[np
     return out, float(best_score)
 
 
+# ============== 掩码处理 ==============
 def _foreground_mask_from_gray(gray_0_255: np.ndarray) -> np.ndarray:
-    """Public helper: return cleaned foreground mask for uploaded images."""
+    """从灰度图像提取清理后的前景掩码（用于上传图像）。"""
     _, _, _, final_mask = _foreground_mask_from_gray_debug(gray_0_255)
     return final_mask
 
 
 def _foreground_mask_from_gray_debug(gray_0_255: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return (gray_corrected, fg, raw_mask, final_mask)."""
+    """返回 (gray_corrected, fg, raw_mask, final_mask)（调试用）。"""
     gray_corrected = _remove_background_shading(gray_0_255)
     fg = _to_foreground_high(gray_corrected)
 
@@ -445,8 +309,9 @@ def _foreground_mask_from_gray_debug(gray_0_255: np.ndarray) -> Tuple[np.ndarray
     return gray_corrected, fg, best_raw, best_final
 
 
+# ============== 裁剪与缩放 ==============
 def _extract_foreground_bbox(mask: np.ndarray, pad: int = 2) -> Optional[Tuple[int, int, int, int]]:
-    """Return the minimal foreground bbox as (y0, y1, x0, x1)."""
+    """返回最小前景 bbox (y0, y1, x0, x1)。"""
     ys, xs = np.where(mask)
     if ys.size == 0 or xs.size == 0:
         return None
@@ -464,7 +329,7 @@ def _extract_foreground_crop(
     pad: int = 2,
     fg_0_1: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Crop the foreground region and zero out background pixels inside the crop."""
+    """裁剪前景区域并清零裁剪内的背景像素。"""
     bbox = _extract_foreground_bbox(mask, pad=pad)
     if bbox is None:
         return np.zeros((0, 0), dtype=np.float32)
@@ -477,112 +342,128 @@ def _extract_foreground_crop(
     return crop
 
 
-def _infer_config_from_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, Any]:
-    linear_weights: list[tuple[int, torch.Tensor]] = []
-    for key, value in state_dict.items():
-        if not key.startswith("network.") or not key.endswith(".weight"):
-            continue
-        parts = key.split(".")
-        if len(parts) != 3:
-            continue
-        try:
-            layer_idx = int(parts[1])
-        except ValueError:
-            continue
-        if not isinstance(value, torch.Tensor) or value.dim() != 2:
-            continue
-        linear_weights.append((layer_idx, value))
+def _resize_and_pad_to_28x28(crop_0_1: np.ndarray, target_long_side: int = 20) -> np.ndarray:
+    """调整大小并填充到 28x28。"""
+    canvas = np.zeros((28, 28), dtype=np.float32)
+    if crop_0_1.size == 0:
+        return canvas
 
-    if not linear_weights:
-        return {}
+    h, w = crop_0_1.shape
+    if h <= 0 or w <= 0:
+        return canvas
 
-    linear_weights.sort(key=lambda item: item[0])
-    first_weight = linear_weights[0][1]
-    last_weight = linear_weights[-1][1]
+    scale = float(target_long_side) / float(max(h, w))
+    new_h = max(1, int(round(h * scale)))
+    new_w = max(1, int(round(w * scale)))
 
-    hidden_dims = [int(weight.shape[0]) for _, weight in linear_weights[:-1]]
-    hidden_dim = hidden_dims[0] if hidden_dims else int(first_weight.shape[0])
-    input_dim = int(first_weight.shape[1])
-    num_classes = int(last_weight.shape[0])
+    resized_pil = Image.fromarray(np.clip(crop_0_1 * 255.0, 0.0, 255.0).astype(np.uint8), mode="L")
+    resized_pil = resized_pil.resize((new_w, new_h), Image.Resampling.BILINEAR)
+    resized = np.asarray(resized_pil, dtype=np.float32) / 255.0
 
-    inferred = {
-        "hidden_dim": hidden_dim,
-        "hidden_dims": hidden_dims if hidden_dims else [hidden_dim],
-        "num_classes": num_classes,
-    }
-
-    if input_dim == 28 * 28:
-        inferred["feature_type"] = "pixel"
-        inferred["projection_dim"] = 28
-    elif input_dim > 28 * 28 and (input_dim - 28 * 28) % 2 == 0:
-        inferred["feature_type"] = "pixel_projection"
-        inferred["projection_dim"] = (input_dim - 28 * 28) // 2
-
-    return inferred
+    top = (28 - new_h) // 2
+    left = (28 - new_w) // 2
+    canvas[top : top + new_h, left : left + new_w] = resized
+    return canvas
 
 
-def recover_config_from_checkpoint(
-    checkpoint: Dict[str, Any],
-    checkpoint_path: str,
-    fallback: Optional[BPTrainingHparams] = None,
-) -> BPTrainingHparams:
-    data: Dict[str, Any] = {}
-    if fallback is not None:
-        data.update(fallback.to_dict())
+def _resize_and_pad_to_28x28_with_mask(
+    crop_0_1: np.ndarray,
+    mask: np.ndarray,
+    target_long_side: int = 20,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """调整大小并填充，同时保留掩码。"""
+    canvas = np.zeros((28, 28), dtype=np.float32)
+    canvas_mask = np.zeros((28, 28), dtype=bool)
+    if crop_0_1.size == 0 or mask.size == 0:
+        return canvas, canvas_mask
 
-    checkpoint_config = checkpoint.get("config")
-    if isinstance(checkpoint_config, dict):
-        data.update(checkpoint_config)
+    h, w = crop_0_1.shape
+    if h <= 0 or w <= 0:
+        return canvas, canvas_mask
 
-    state_dict = checkpoint.get("model_state_dict", {})
-    if isinstance(state_dict, dict):
-        inferred = _infer_config_from_state_dict(state_dict)
-        for key, value in inferred.items():
-            data.setdefault(key, value)
+    scale = float(target_long_side) / float(max(h, w))
+    new_h = max(1, int(round(h * scale)))
+    new_w = max(1, int(round(w * scale)))
 
-    data.setdefault("experiment_name", Path(checkpoint_path).stem.replace("_best", ""))
-    data.setdefault("save_dir", str(Path(checkpoint_path).resolve().parent))
-    data["checkpoint_path_override"] = str(Path(checkpoint_path).resolve())
+    resized_crop = Image.fromarray(np.clip(crop_0_1 * 255.0, 0.0, 255.0).astype(np.uint8), mode="L")
+    resized_crop = resized_crop.resize((new_w, new_h), Image.Resampling.BILINEAR)
+    resized_crop_arr = np.asarray(resized_crop, dtype=np.float32) / 255.0
 
-    normalized = _normalize_hparams_payload(data)
-    return BPTrainingHparams(**normalized)
+    resized_mask = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
+    resized_mask = resized_mask.resize((new_w, new_h), Image.Resampling.NEAREST)
+    resized_mask_arr = np.asarray(resized_mask, dtype=np.uint8) > 0
 
-
-def load_model_from_checkpoint(
-    checkpoint_path: str,
-    device: str = "cpu",
-    fallback_config: Optional[BPTrainingHparams] = None,
-) -> Tuple[MLP, BPTrainingHparams, Dict[str, Any]]:
-    abs_path = str(Path(checkpoint_path).resolve())
-    if not os.path.exists(abs_path):
-        raise FileNotFoundError(f"Checkpoint not found: {abs_path}")
-
-    torch_device = resolve_device(device)
-    checkpoint = torch.load(abs_path, map_location=torch_device)
-    if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
-        raise ValueError("Invalid checkpoint format. Missing 'model_state_dict'.")
-
-    config = recover_config_from_checkpoint(checkpoint, abs_path, fallback=fallback_config)
-    model = MLP(
-        input_dim=config.input_dim,
-        hidden_dims=config.hidden_dims,
-        num_classes=config.num_classes,
-        activation=config.activation,
-        dropout=config.dropout,
-        batch_norm=config.batch_norm,
-        weight_init=config.weight_init,
-    ).to(torch_device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-
-    return model, config, checkpoint
+    top = (28 - new_h) // 2
+    left = (28 - new_w) // 2
+    canvas[top : top + new_h, left : left + new_w] = resized_crop_arr
+    canvas_mask[top : top + new_h, left : left + new_w] = resized_mask_arr
+    return canvas, canvas_mask
 
 
+# ============== 中心化 ==============
+def _shift_with_zero_pad(img_0_1: np.ndarray, shift_y: int, shift_x: int) -> np.ndarray:
+    """按指定距离移动图像（零填充）。"""
+    out = np.zeros_like(img_0_1, dtype=np.float32)
+    h, w = img_0_1.shape
+
+    src_y0 = max(0, -shift_y)
+    src_y1 = min(h, h - shift_y) if shift_y >= 0 else h
+    dst_y0 = max(0, shift_y)
+    dst_y1 = dst_y0 + (src_y1 - src_y0)
+
+    src_x0 = max(0, -shift_x)
+    src_x1 = min(w, w - shift_x) if shift_x >= 0 else w
+    dst_x0 = max(0, shift_x)
+    dst_x1 = dst_x0 + (src_x1 - src_x0)
+
+    if src_y1 > src_y0 and src_x1 > src_x0:
+        out[dst_y0:dst_y1, dst_x0:dst_x1] = img_0_1[src_y0:src_y1, src_x0:src_x1]
+
+    return out
+
+
+def _center_by_mass(img_0_1: np.ndarray) -> np.ndarray:
+    """通过质量中心来中心化图像。"""
+    mass = float(img_0_1.sum())
+    if mass <= 1e-8:
+        return img_0_1.astype(np.float32)
+
+    ys, xs = np.indices(img_0_1.shape, dtype=np.float32)
+    cy = float((ys * img_0_1).sum() / mass)
+    cx = float((xs * img_0_1).sum() / mass)
+
+    target_center = 13.5
+    shift_y = int(round(target_center - cy))
+    shift_x = int(round(target_center - cx))
+    return _shift_with_zero_pad(img_0_1.astype(np.float32), shift_y=shift_y, shift_x=shift_x)
+
+
+def _center_foreground_with_mask(img_0_1: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """通过质量中心来中心化图像和掩码。"""
+    mass = float(img_0_1.sum())
+    if mass <= 1e-8:
+        return img_0_1.astype(np.float32), mask.astype(bool)
+
+    ys, xs = np.indices(img_0_1.shape, dtype=np.float32)
+    cy = float((ys * img_0_1).sum() / mass)
+    cx = float((xs * img_0_1).sum() / mass)
+
+    target_center = 13.5
+    shift_y = int(round(target_center - cy))
+    shift_x = int(round(target_center - cx))
+
+    centered_img = _shift_with_zero_pad(img_0_1.astype(np.float32), shift_y=shift_y, shift_x=shift_x)
+    centered_mask = _shift_with_zero_pad(mask.astype(np.float32), shift_y=shift_y, shift_x=shift_x) > 0.5
+    return centered_img, centered_mask
+
+
+# ============== 预处理流程 ==============
 def _normalize_28x28(gray_image: Image.Image) -> torch.Tensor:
+    """规范化灰度 PIL 图像到 28x28 张量。"""
     gray = np.asarray(gray_image.convert("L"), dtype=np.float32)
     fg = _to_foreground_high(gray)
     mask = _binarize_foreground(fg)
-    crop = _crop_foreground_bbox(fg, mask, pad=1)
+    crop = _extract_foreground_crop(gray, mask, pad=1, fg_0_1=fg)
 
     if crop.size == 0:
         out = np.zeros((28, 28), dtype=np.float32)
@@ -594,8 +475,15 @@ def _normalize_28x28(gray_image: Image.Image) -> torch.Tensor:
     return torch.from_numpy(out).unsqueeze(0)
 
 
+def preprocess_canvas_image(canvas_image: np.ndarray) -> torch.Tensor:
+    """预处理画板图像为 28x28 张量。"""
+    gray_0_255 = _extract_canvas_gray(canvas_image)
+    pil = Image.fromarray(gray_0_255.astype(np.uint8), mode="L")
+    return _normalize_28x28(pil)
+
+
 def _preprocess_uploaded_image_core(image: Image.Image) -> Dict[str, Any]:
-    """Preprocess an uploaded PIL image into MNIST-like input plus debug artifacts."""
+    """预处理上传的 PIL 图像，返回包含调试中间结果的字典。"""
     gray = _extract_uploaded_gray(image)
     gray_corrected, fg, raw_mask, mask = _foreground_mask_from_gray_debug(gray)
 
@@ -649,48 +537,18 @@ def _preprocess_uploaded_image_core(image: Image.Image) -> Dict[str, Any]:
 
 
 def preprocess_uploaded_image(image: Image.Image) -> torch.Tensor:
+    """预处理上传的 PIL 图像为 28x28 张量。"""
     return _preprocess_uploaded_image_core(image)["tensor"]
 
 
-def predict_uploaded_image_with_model(
-    image: Image.Image,
-    model: MLP,
-    config: BPTrainingHparams,
-    device: str = "cpu",
-) -> Dict[str, Any]:
-    preprocess = _preprocess_uploaded_image_core(image)
-    result = _predict_from_tensor(
-        image_tensor=preprocess["tensor"],
-        model=model,
-        config=config,
-        device=device,
-    )
-    result.update(
-        {
-            "uploaded_gray": preprocess["gray"],
-            "uploaded_gray_corrected": preprocess["gray_corrected"],
-            "uploaded_fg": preprocess["fg"],
-            "uploaded_raw_mask": preprocess["raw_mask"],
-            "uploaded_mask": preprocess["mask"],
-            "uploaded_crop": preprocess["crop"],
-            "uploaded_final_28": preprocess["final_28"],
-        }
-    )
-    return result
-
-
-def preprocess_canvas_image(canvas_image: np.ndarray) -> torch.Tensor:
-    gray_0_255 = _extract_canvas_gray(canvas_image)
-    pil = Image.fromarray(gray_0_255.astype(np.uint8), mode="L")
-    return _normalize_28x28(pil)
-
-
+# ============== 预测 ==============
 def _predict_from_tensor(
     image_tensor: torch.Tensor,
     model: MLP,
     config: BPTrainingHparams,
     device: str = "cpu",
 ) -> Dict[str, Any]:
+    """从张量进行预测。"""
     feature_extractor = get_feature_extractor(feature_type=config.feature_type)
 
     features = feature_extractor(image_tensor).unsqueeze(0)
@@ -710,68 +568,44 @@ def _predict_from_tensor(
     }
 
 
-def predict_image(
-    image: Image.Image,
-    checkpoint_path: str,
-    device: str = "cpu",
-) -> Dict[str, Any]:
-    model, config, checkpoint = load_model_from_checkpoint(
-        checkpoint_path=checkpoint_path,
-        device=device,
-    )
-
-    result = _predict_from_tensor(
-        image_tensor=preprocess_uploaded_image(image),
-        model=model,
-        config=config,
-        device=device,
-    )
-    result["checkpoint"] = checkpoint
-    return result
-
-
-def predict_image_with_model(
-    image: Image.Image,
-    model: MLP,
-    config: BPTrainingHparams,
-    device: str = "cpu",
-) -> Dict[str, Any]:
-    return _predict_from_tensor(
-        image_tensor=preprocess_uploaded_image(image),
-        model=model,
-        config=config,
-        device=device,
-    )
-
-
-def predict_canvas_image(
-    canvas_image: np.ndarray,
-    checkpoint_path: str,
-    device: str = "cpu",
-) -> Dict[str, Any]:
-    model, config, checkpoint = load_model_from_checkpoint(
-        checkpoint_path=checkpoint_path,
-        device=device,
-    )
-    result = _predict_from_tensor(
-        image_tensor=preprocess_canvas_image(canvas_image),
-        model=model,
-        config=config,
-        device=device,
-    )
-    result["checkpoint"] = checkpoint
-    return result
-
-
 def predict_canvas_with_model(
     canvas_image: np.ndarray,
     model: MLP,
     config: BPTrainingHparams,
     device: str = "cpu",
 ) -> Dict[str, Any]:
+    """识别画板图像。"""
     return _predict_from_tensor(
         image_tensor=preprocess_canvas_image(canvas_image),
         model=model,
         config=config,
         device=device,
     )
+
+
+def predict_uploaded_image_with_model(
+    image: Image.Image,
+    model: MLP,
+    config: BPTrainingHparams,
+    device: str = "cpu",
+) -> Dict[str, Any]:
+    """识别上传的图像，返回包含调试中间结果的预测。"""
+    preprocess = _preprocess_uploaded_image_core(image)
+    result = _predict_from_tensor(
+        image_tensor=preprocess["tensor"],
+        model=model,
+        config=config,
+        device=device,
+    )
+    result.update(
+        {
+            "uploaded_gray": preprocess["gray"],
+            "uploaded_gray_corrected": preprocess["gray_corrected"],
+            "uploaded_fg": preprocess["fg"],
+            "uploaded_raw_mask": preprocess["raw_mask"],
+            "uploaded_mask": preprocess["mask"],
+            "uploaded_crop": preprocess["crop"],
+            "uploaded_final_28": preprocess["final_28"],
+        }
+    )
+    return result
