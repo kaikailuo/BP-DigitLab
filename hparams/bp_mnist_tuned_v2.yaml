@@ -31,7 +31,7 @@ gradient_clip_norm: 5.0
 
 normalize_images: true
 normalize_features: true
-augment_train: true
+augment_train: false
 augment_rotation: 10.0
 augment_translate: 0.08
 augment_scale_min: 0.95
