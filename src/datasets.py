@@ -62,6 +62,15 @@ def _normalize_image(
     return (image - image_mean) / image_std.clamp_min(_EPS)
 
 
+def normalize_image_tensor(
+    image: torch.Tensor,
+    image_mean: torch.Tensor | None,
+    image_std: torch.Tensor | None,
+) -> torch.Tensor:
+    """对单张图像执行与训练阶段一致的图像标准化。"""
+    return _normalize_image(image, image_mean, image_std)
+
+
 def _compute_feature_stats(
     images: torch.Tensor,
     feature_extractor,
@@ -110,6 +119,11 @@ def _build_shared_stats(config) -> Dict[str, torch.Tensor | None]:
     }
 
 
+def build_shared_stats(config) -> Dict[str, torch.Tensor | None]:
+    """暴露共享统计量构建逻辑，供推理阶段复用。"""
+    return _build_shared_stats(config)
+
+
 class MNISTFeatureDataset(Dataset):
     """在保持原有接口风格的前提下，支持增强和标准化的 MNIST 特征数据集。"""
 
@@ -136,12 +150,19 @@ class MNISTFeatureDataset(Dataset):
         self.feature_mean = stats.get("feature_mean")
         self.feature_std = stats.get("feature_std")
 
-        self.stats_summary = {
+        self.shared_stats = {
             "normalize_images": bool(config.normalize_images),
             "normalize_features": bool(config.normalize_features),
-            "image_mean": None if self.image_mean is None else float(self.image_mean.item()),
-            "image_std": None if self.image_std is None else float(self.image_std.item()),
+            "image_mean": None if self.image_mean is None else self.image_mean.detach().cpu().clone(),
+            "image_std": None if self.image_std is None else self.image_std.detach().cpu().clone(),
+            "feature_mean": None
+            if self.feature_mean is None
+            else self.feature_mean.detach().cpu().clone(),
+            "feature_std": None
+            if self.feature_std is None
+            else self.feature_std.detach().cpu().clone(),
         }
+        self.stats_summary = dict(self.shared_stats)
 
         self.augment = None
         if split == "train" and config.augment_train:
@@ -178,7 +199,7 @@ def build_train_val_datasets(config) -> Tuple[MNISTFeatureDataset, MNISTFeatureD
         val_size=config.val_size,
         seed=config.seed,
     )
-    shared_stats = _build_shared_stats(config)
+    shared_stats = build_shared_stats(config)
 
     train_images, train_labels = _load_subset(train_base, train_indices)
     val_images, val_labels = _load_subset(train_base, val_indices)
@@ -203,7 +224,7 @@ def build_train_val_datasets(config) -> Tuple[MNISTFeatureDataset, MNISTFeatureD
 
 
 def build_test_dataset(config) -> MNISTFeatureDataset:
-    shared_stats = _build_shared_stats(config)
+    shared_stats = build_shared_stats(config)
     test_base = MNIST(root=config.data_root, train=False, download=True)
     test_indices = _sample_indices(
         total_size=len(test_base),

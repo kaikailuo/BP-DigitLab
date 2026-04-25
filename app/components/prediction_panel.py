@@ -17,7 +17,7 @@ def render_prediction_panel(result: Dict[str, Any]) -> None:
     渲染预测结果面板。
     
     参数：
-        result: 预测结果字典（来自 recognition_service）
+        result: 预测结果字典
     """
     st.markdown(
         f"""

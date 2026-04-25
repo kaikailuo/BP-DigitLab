@@ -159,6 +159,8 @@ class BPTrainer:
             "model_state_dict": self.model.state_dict(),
             "config": self.config.to_dict(),
         }
+        if hasattr(self.train_set, "shared_stats"):
+            checkpoint["normalization_stats"] = self.train_set.shared_stats
         torch.save(checkpoint, self.config.checkpoint_path)
 
     def _save_history(self, best_epoch: int, best_val_acc: float):
@@ -169,9 +171,9 @@ class BPTrainer:
             history_payload,
             os.path.join(self.config.experiment_result_dir, "training_history.json"),
         )
-        if hasattr(self.train_set, "stats_summary"):
+        if hasattr(self.train_set, "shared_stats"):
             save_json(
-                self.train_set.stats_summary,
+                self.train_set.shared_stats,
                 os.path.join(self.config.experiment_result_dir, "data_stats.json"),
             )
         plot_training_curves(self.history, self.config.experiment_result_dir)
