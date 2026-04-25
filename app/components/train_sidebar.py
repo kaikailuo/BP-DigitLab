@@ -132,8 +132,8 @@ def render_train_sidebar(workspace_root: Path) -> Dict[str, Any]:
         )
         scheduler = st.selectbox(
             "scheduler",
-            options=["none", "step"],
-            index=["none", "step"].index(get_form_value("scheduler", "none")),
+            options=["none", "step" , "reduce_on_plateau"],
+            index=["none", "step", "reduce_on_plateau"].index(get_form_value("scheduler", "none")),
             key="cfg_scheduler",
         )
         step_size = st.number_input("step_size", min_value=1, value=int(get_form_value("step_size", 10)), key="cfg_step_size")
