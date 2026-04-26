@@ -15,6 +15,7 @@ UI_RESULT_DIR = "ui_result_dir"
 CANVAS_NONCE = "canvas_nonce"
 UPLOAD_PREDICTION_RESULT = "upload_prediction_result"
 UPLOAD_ORIGINAL_IMAGE = "upload_original_image"
+RECOGNITION_RESULT = "recognition_result"
 FORM_INITIALIZED = "cfg_initialized"
 
 # ============== Initialization ==============
@@ -32,6 +33,8 @@ def ensure_recognition_state_initialized() -> None:
         st.session_state[UPLOAD_PREDICTION_RESULT] = None
     if UPLOAD_ORIGINAL_IMAGE not in st.session_state:
         st.session_state[UPLOAD_ORIGINAL_IMAGE] = None
+    if RECOGNITION_RESULT not in st.session_state:
+        st.session_state[RECOGNITION_RESULT] = None
 
 def ensure_ui_context_initialized(save_dir: str, result_dir: str) -> None:
     if UI_SAVE_DIR not in st.session_state:
@@ -105,3 +108,9 @@ def get_upload_original_image() -> Optional[Any]:
 
 def set_upload_original_image(image: Any) -> None:
     st.session_state[UPLOAD_ORIGINAL_IMAGE] = image
+
+def get_recognition_result() -> Optional[Dict[str, Any]]:
+    return st.session_state.get(RECOGNITION_RESULT)
+
+def set_recognition_result(result: Optional[Dict[str, Any]]) -> None:
+    st.session_state[RECOGNITION_RESULT] = result
