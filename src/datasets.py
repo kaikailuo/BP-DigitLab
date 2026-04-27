@@ -1,10 +1,11 @@
 from typing import Dict, Tuple
+from PIL import ImageOps
 
 import torch
 from torch.utils.data import Dataset
 from torchvision.datasets import EMNIST, MNIST
 from torchvision.transforms import InterpolationMode, RandomAffine
-from torchvision.transforms.functional import to_tensor
+from torchvision.transforms.functional import to_tensor, rotate
 
 from src.features import get_feature_extractor, standardize_feature
 
@@ -51,6 +52,17 @@ def _build_base_dataset(config, train: bool):
         )
     raise ValueError(f"不支持的数据集: {config.dataset}")
 
+def _fix_emnist_orientation(pil_image, config):
+    """修正 EMNIST 图像方向。
+
+    torchvision 加载的 EMNIST 字符常见表现为横向/转置状态。
+    这里统一在数据集构建阶段修正，使训练、验证、测试看到的都是正常方向字符。
+    """
+    if config.dataset == "emnist":
+        # 如果你确认当前图像只是“横着的，需要逆时针旋转90°”，用这一行
+        pil_image = ImageOps.mirror(pil_image.rotate(-90, expand=True))
+
+    return pil_image
 
 def _normalize_label(label: int, config) -> int:
     normalized = int(label)
@@ -62,10 +74,16 @@ def _normalize_label(label: int, config) -> int:
 def _load_subset(base_dataset, indices: torch.Tensor, config) -> Tuple[torch.Tensor, torch.Tensor]:
     images = []
     labels = []
+
     for idx in indices.tolist():
         pil_image, label = base_dataset[idx]
+    
+        # 关键修改：EMNIST 图像方向修正
+        pil_image = _fix_emnist_orientation(pil_image, config)
+
         images.append(to_tensor(pil_image))
         labels.append(_normalize_label(label, config))
+
     return torch.stack(images), torch.tensor(labels, dtype=torch.long)
 
 
