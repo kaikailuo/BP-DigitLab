@@ -27,7 +27,7 @@ def _render_result_panel() -> None:
     st.subheader("预测结果")
     result = get_recognition_result()
     if result is None:
-        st.info("请先在画板写数字，或上传一张图片，再进行识别。")
+        st.info("请先在画板写字符，或上传一张图片，再进行识别。")
         return
     render_prediction_panel(result)
 
@@ -44,7 +44,7 @@ def render_recognition_page(workspace_root: Path) -> None:
     """Render the recognition page."""
     del workspace_root
 
-    st.title("BP 手写数字识别实验 - 交互识别页面")
+    st.title("BP 手写字符识别实验 - 交互识别页面")
     st.caption("识别页只使用训练页已加载的模型。")
 
     if st.button("返回训练界面", key="back-to-train", width="stretch"):
@@ -91,9 +91,9 @@ def render_recognition_page(workspace_root: Path) -> None:
 
             if predict_clicked:
                 if canvas_result is None or canvas_result.image_data is None:
-                    st.warning("画板为空，请先写一个数字再识别。")
+                    st.warning("画板为空，请先写一个字符再识别。")
                 elif _is_canvas_empty(canvas_result.image_data):
-                    st.warning("画板几乎为空，请先写一个数字。")
+                    st.warning("画板几乎为空，请先写一个字符。")
                 else:
                     try:
                         result = predictor.predict_canvas(canvas_result.image_data)

@@ -1,4 +1,4 @@
-"""Drawable canvas component for digit recognition."""
+"""Drawable canvas component for handwritten character recognition."""
 from typing import Optional
 
 import streamlit as st
@@ -22,7 +22,7 @@ def render_canvas_board() -> Optional[dict]:
         )
         return None
 
-    st.markdown("### 鼠标手写数字")
+    st.markdown("### 鼠标手写字符")
     st.caption("黑底白字，建议尽量写在中间。")
 
     return st_canvas(

@@ -63,6 +63,8 @@ class BPEvaluator:
         all_preds = []
         all_labels = []
         wrong_samples = []
+        class_ids = list(range(self.config.num_classes))
+        class_names = list(self.config.resolved_class_names)
 
         sample_offset = 0
         with torch.no_grad():
@@ -93,17 +95,21 @@ class BPEvaluator:
         precision = precision_score(all_labels, all_preds, average="macro", zero_division=0)
         recall = recall_score(all_labels, all_preds, average="macro", zero_division=0)
         f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
-        cm = confusion_matrix(all_labels, all_preds)
+        cm = confusion_matrix(all_labels, all_preds, labels=class_ids)
 
         report_text = classification_report(
             all_labels,
             all_preds,
+            labels=class_ids,
+            target_names=class_names,
             digits=4,
             zero_division=0,
         )
         report_dict = classification_report(
             all_labels,
             all_preds,
+            labels=class_ids,
+            target_names=class_names,
             output_dict=True,
             zero_division=0,
         )
@@ -113,6 +119,7 @@ class BPEvaluator:
             "precision_macro": round(float(precision), 6),
             "recall_macro": round(float(recall), 6),
             "f1_macro": round(float(f1), 6),
+            "class_names": class_names,
             "confusion_matrix": np.asarray(cm).tolist(),
             "classification_report": report_dict,
         }
@@ -123,7 +130,7 @@ class BPEvaluator:
 
         plot_confusion_matrix(
             confusion_matrix=np.asarray(cm),
-            class_names=[str(i) for i in range(self.config.num_classes)],
+            class_names=class_names,
             save_path=os.path.join(result_dir, "confusion_matrix.png"),
         )
 

@@ -2,7 +2,7 @@ from typing import Dict, Tuple
 
 import torch
 from torch.utils.data import Dataset
-from torchvision.datasets import MNIST
+from torchvision.datasets import EMNIST, MNIST
 from torchvision.transforms import InterpolationMode, RandomAffine
 from torchvision.transforms.functional import to_tensor
 
@@ -24,6 +24,9 @@ def _split_train_val_indices(
     val_size: int,
     seed: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if train_size is None or val_size is None:
+        train_size = int(total_size * 0.8)
+        val_size = int(total_size * 0.2)
     if train_size + val_size > total_size:
         raise ValueError(
             f"train_size + val_size = {train_size + val_size} 超过训练集总量 {total_size}。"
@@ -36,13 +39,33 @@ def _split_train_val_indices(
     return train_indices, val_indices
 
 
-def _load_subset(base_dataset: MNIST, indices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def _build_base_dataset(config, train: bool):
+    if config.dataset == "mnist":
+        return MNIST(root=config.data_root, train=train, download=True)
+    if config.dataset == "emnist":
+        return EMNIST(
+            root=config.data_root,
+            split=config.emnist_split,
+            train=train,
+            download=True,
+        )
+    raise ValueError(f"不支持的数据集: {config.dataset}")
+
+
+def _normalize_label(label: int, config) -> int:
+    normalized = int(label)
+    if config.dataset == "emnist" and config.emnist_split == "letters":
+        normalized -= 1
+    return normalized
+
+
+def _load_subset(base_dataset, indices: torch.Tensor, config) -> Tuple[torch.Tensor, torch.Tensor]:
     images = []
     labels = []
     for idx in indices.tolist():
         pil_image, label = base_dataset[idx]
         images.append(to_tensor(pil_image))
-        labels.append(label)
+        labels.append(_normalize_label(label, config))
     return torch.stack(images), torch.tensor(labels, dtype=torch.long)
 
 
@@ -88,14 +111,14 @@ def _compute_feature_stats(
 
 
 def _build_shared_stats(config) -> Dict[str, torch.Tensor | None]:
-    train_base = MNIST(root=config.data_root, train=True, download=True)
+    train_base = _build_base_dataset(config, train=True)
     train_indices, _ = _split_train_val_indices(
         total_size=len(train_base),
         train_size=config.train_size,
         val_size=config.val_size,
         seed=config.seed,
     )
-    train_images, _ = _load_subset(train_base, train_indices)
+    train_images, _ = _load_subset(train_base, train_indices, config)
 
     image_mean, image_std = (None, None)
     if config.normalize_images:
@@ -125,7 +148,7 @@ def build_shared_stats(config) -> Dict[str, torch.Tensor | None]:
 
 
 class MNISTFeatureDataset(Dataset):
-    """在保持原有接口风格的前提下，支持增强和标准化的 MNIST 特征数据集。"""
+    """28x28 手写字符数据集，支持增强与标准化。"""
 
     def __init__(
         self,
@@ -192,7 +215,10 @@ class MNISTFeatureDataset(Dataset):
 
 
 def build_train_val_datasets(config) -> Tuple[MNISTFeatureDataset, MNISTFeatureDataset]:
-    train_base = MNIST(root=config.data_root, train=True, download=True)
+    train_base = _build_base_dataset(config, train=True)
+    if config.train_size is None or config.val_size is None:
+        config.train_size = int(len(train_base) * 0.8)
+        config.val_size = int(len(train_base) * 0.2)
     train_indices, val_indices = _split_train_val_indices(
         total_size=len(train_base),
         train_size=config.train_size,
@@ -201,8 +227,8 @@ def build_train_val_datasets(config) -> Tuple[MNISTFeatureDataset, MNISTFeatureD
     )
     shared_stats = build_shared_stats(config)
 
-    train_images, train_labels = _load_subset(train_base, train_indices)
-    val_images, val_labels = _load_subset(train_base, val_indices)
+    train_images, train_labels = _load_subset(train_base, train_indices, config)
+    val_images, val_labels = _load_subset(train_base, val_indices, config)
 
     train_set = MNISTFeatureDataset(
         images=train_images,
@@ -225,13 +251,15 @@ def build_train_val_datasets(config) -> Tuple[MNISTFeatureDataset, MNISTFeatureD
 
 def build_test_dataset(config) -> MNISTFeatureDataset:
     shared_stats = build_shared_stats(config)
-    test_base = MNIST(root=config.data_root, train=False, download=True)
+    test_base = _build_base_dataset(config, train=False)
+    if config.test_size is None:
+        config.test_size = len(test_base)
     test_indices = _sample_indices(
         total_size=len(test_base),
         sample_size=config.test_size,
         seed=config.seed + 1,
     )
-    test_images, test_labels = _load_subset(test_base, test_indices)
+    test_images, test_labels = _load_subset(test_base, test_indices, config)
 
     return MNISTFeatureDataset(
         images=test_images,

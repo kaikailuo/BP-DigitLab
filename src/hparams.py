@@ -6,6 +6,10 @@ import yaml
 
 from src.features import get_feature_dim
 
+EMNIST_BALANCED_CLASS_NAMES = list("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabdefghnqrt")
+EMNIST_BYCLASS_CLASS_NAMES = list("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+EMNIST_LETTERS_CLASS_NAMES = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
 
 def _parse_hidden_dims(hidden_dims: Any, hidden_dim: int) -> list[int]:
     if hidden_dims is None:
@@ -22,12 +26,13 @@ def _parse_hidden_dims(hidden_dims: Any, hidden_dim: int) -> list[int]:
         if not parsed:
             return [int(hidden_dim)]
         return parsed
-    raise TypeError("hidden_dims 必须为 int、list、tuple 或逗号分隔字符串。")
+    raise TypeError("hidden_dims 必须是 int、list、tuple 或逗号分隔字符串。")
 
 
 @dataclass
 class BPTrainingHparams:
     dataset: str = "mnist"
+    emnist_split: str = "balanced"
     data_root: str = "./data"
     feature_type: str = "pixel"
 
@@ -81,10 +86,14 @@ class BPTrainingHparams:
     max_wrong_samples: int = 16
 
     def __post_init__(self):
+        self.dataset = self.dataset.lower()
+        self.emnist_split = self.emnist_split.lower()
         self.hidden_dims = _parse_hidden_dims(self.hidden_dims, self.hidden_dim)
 
-        if self.dataset.lower() != "mnist":
-            raise ValueError("当前项目仅支持 dataset=mnist。")
+        if self.dataset not in {"mnist", "emnist"}:
+            raise ValueError("dataset 仅支持 'mnist' 或 'emnist'。")
+        if self.dataset == "emnist" and self.emnist_split not in {"balanced", "byclass", "letters"}:
+            raise ValueError("emnist_split 仅支持 'balanced'、'byclass'、'letters'。")
         if self.feature_type not in {"pixel", "pixel_projection", "pixel_projection_profile"}:
             raise ValueError(
                 "feature_type 仅支持 'pixel'、'pixel_projection'、'pixel_projection_profile'。"
@@ -109,6 +118,11 @@ class BPTrainingHparams:
             raise ValueError("augment_scale_min 和 augment_scale_max 必须大于 0。")
         if self.augment_scale_min > self.augment_scale_max:
             raise ValueError("augment_scale_min 不能大于 augment_scale_max。")
+        if self.num_classes != len(self.resolved_class_names):
+            raise ValueError(
+                f"num_classes={self.num_classes} 与当前数据集类别数 "
+                f"{len(self.resolved_class_names)} 不一致。"
+            )
 
     @property
     def input_dim(self) -> int:
@@ -121,6 +135,18 @@ class BPTrainingHparams:
     @property
     def experiment_result_dir(self) -> str:
         return os.path.join(self.result_dir, self.experiment_name)
+
+    @property
+    def resolved_class_names(self) -> list[str]:
+        if self.dataset == "mnist":
+            return [str(i) for i in range(10)]
+        if self.emnist_split == "balanced":
+            return EMNIST_BALANCED_CLASS_NAMES.copy()
+        if self.emnist_split == "byclass":
+            return EMNIST_BYCLASS_CLASS_NAMES.copy()
+        if self.emnist_split == "letters":
+            return EMNIST_LETTERS_CLASS_NAMES.copy()
+        raise ValueError(f"未知 emnist_split: {self.emnist_split}")
 
     def to_dict(self):
         return asdict(self)

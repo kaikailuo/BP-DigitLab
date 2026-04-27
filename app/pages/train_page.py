@@ -23,7 +23,7 @@ from src.utils import set_seed
 
 def render_train_page(workspace_root: Path) -> None:
     """Render the training page."""
-    st.title("BP 手写数字识别实验 - 训练模型页面")
+    st.title("BP 手写字符识别实验 - 训练模型页面")
     st.caption("配置训练、查看历史实验，并从历史模型进入交互识别页面。")
 
     form_values = render_train_sidebar(workspace_root)

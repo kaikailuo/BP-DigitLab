@@ -257,6 +257,8 @@ class DigitPredictor:
             logits = self.model(normalized_feature.unsqueeze(0))
             probabilities = torch.softmax(logits, dim=1).squeeze(0).detach().cpu().tolist()
             prediction = int(logits.argmax(dim=1).item())
+            class_names = list(self.config.resolved_class_names)
+            prediction_label = class_names[prediction]
 
         raw_image_mean, raw_image_std = _mean_std_from_tensor(raw_image_tensor)
         norm_image_mean, norm_image_std = _mean_std_from_tensor(normalized_image)
@@ -264,6 +266,8 @@ class DigitPredictor:
 
         result = {
             "prediction": prediction,
+            "prediction_label": prediction_label,
+            "class_names": class_names,
             "probabilities": probabilities,
             "config": self.config,
             "preprocessed_image": display_tensor,

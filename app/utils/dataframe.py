@@ -1,23 +1,11 @@
-"""
-数据框工具。
-
-提供数据框格式化和处理辅助函数。
-"""
+"""DataFrame helpers for the Streamlit app."""
 from typing import Any, Dict, List
 
 import pandas as pd
 
 
 def format_experiment_history_dataframe(rows: List[Dict[str, Any]]) -> pd.DataFrame:
-    """
-    格式化实验历史列表为 DataFrame。
-    
-    参数：
-        rows: 从 experiment_service.scan_experiments 获得的行列表
-    
-    返回：
-        格式化后的 DataFrame
-    """
+    """Format experiment history rows for display."""
     data = []
     for row in rows:
         data.append(
@@ -34,18 +22,18 @@ def format_experiment_history_dataframe(rows: List[Dict[str, Any]]) -> pd.DataFr
     return pd.DataFrame(data)
 
 
-def format_probabilities_dataframe(probabilities: List[float]) -> pd.DataFrame:
-    """
-    格式化预测概率为 DataFrame。
-    
-    参数：
-        probabilities: 预测概率列表 (10 个值，对应数字 0-9)
-    
-    返回：
-        包含数字和概率的 DataFrame
-    """
-    probability_rows = [
-        {"digit": digit, "probability": float(prob)}
-        for digit, prob in enumerate(probabilities)
+def format_probabilities_dataframe(
+    probabilities: List[float],
+    class_names: List[str] | None = None,
+) -> pd.DataFrame:
+    """Format class probabilities for display."""
+    if class_names is None:
+        class_names = [str(index) for index in range(len(probabilities))]
+    if len(class_names) != len(probabilities):
+        raise ValueError("class_names 数量必须与 probabilities 一致。")
+
+    rows = [
+        {"class": class_name, "probability": float(probability)}
+        for class_name, probability in zip(class_names, probabilities)
     ]
-    return pd.DataFrame(probability_rows)
+    return pd.DataFrame(rows)

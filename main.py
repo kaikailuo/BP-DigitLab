@@ -8,7 +8,7 @@ from src.utils import set_seed
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="基于 BP/MLP 的 MNIST 手写数字识别系统")
+    parser = argparse.ArgumentParser(description="基于 BP/MLP 的手写字符识别系统")
     parser.add_argument(
         "--mode",
         type=str,
